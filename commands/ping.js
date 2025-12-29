@@ -1,12 +1,19 @@
-export const info = {
-  name: 'ping',
-  aliases: [],
-  description: "Check the bot's response time",
-};
-
-export const pingCommand = async (m, sock, startTime) => {
-  const end = Date.now();
-  const ping = end - startTime;
-  const text = `🍀 Pong! Response time: *${ping}ms*`;
-  await sock.sendMessage(m.key.remoteJid, { text }, { quoted: m });
-};
+export default {
+  info: {
+    name: 'ping',
+    alias: [],
+    desc: 'Response time check'
+  },
+  execute: async (m, sock) => {
+    const start = Date.now()
+    const msg = await sock.sendMessage(m.key.remoteJid, { 
+      text: 'Pinging...' 
+    }, { quoted: m })
+    
+    const ping = Date.now() - start
+    await sock.sendMessage(m.key.remoteJid, { 
+      text: `Pong! ${ping}ms`,
+      edit: msg.key
+    })
+  }
+}
