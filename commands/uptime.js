@@ -1,15 +1,17 @@
-export const info = {
-  name: 'uptime',
-  aliases: [],
-  description: 'Show how long the bot has been running',
-};
-
-export const uptimeCommand = async (m, sock) => {
-  const seconds = process.uptime();
-  const h = Math.floor(seconds / 3600);
-  const m_ = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  const uptimeStr = `${h}h ${m_}m ${s}s`;
-  const text = `⏱ Bot uptime: *${uptimeStr}*`;
-  await sock.sendMessage(m.key.remoteJid, { text }, { quoted: m });
-};
+export default {
+  info: {
+    name: 'uptime',
+    alias: [],
+    desc: 'Bot uptime'
+  },
+  execute: async (m, sock) => {
+    const seconds = process.uptime()
+    const h = Math.floor(seconds / 3600)
+    const min = Math.floor((seconds % 3600) / 60)
+    const s = Math.floor(seconds % 60)
+    
+    await sock.sendMessage(m.key.remoteJid, { 
+      text: `Uptime: ${h}h ${min}m ${s}s` 
+    }, { quoted: m })
+  }
+}

@@ -1,16 +1,17 @@
 {
-  "name": "ALex-Techy boT",
-  "version": "1.0.0",
+  "name": "eco-alliance-bot",
+  "version": "2.0.0",
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "dev": "node --watch index.js"
   },
-  "author": "ALex",
-  "license": "ISC",
-  "description": "",
+  "author": "ECO-ALLIANCE",
+  "license": "MIT",
+  "description": "Advanced WhatsApp Bot",
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.21",
+    "@whiskeysockets/baileys": "7.0.0-rc.9",
     "pino": "^9.7.0",
     "qrcode-terminal": "^0.12.0"
   }

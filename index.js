@@ -1,150 +1,117 @@
+import { useMultiFileAuthState, fetchLatestBaileysVersion, makeWASocket, DisconnectReason, delay } from '@whiskeysockets/baileys'
+import pino from 'pino'
+import { Boom } from '@hapi/boom'
+import { readdirSync } from 'fs'
+import { join, dirname } from 'path'
+import { fileURLToPath } from 'url'
+import qrcode from 'qrcode-terminal'
+import { loadSettings, getSetting } from './settings.js'
 
-import {
-  useMultiFileAuthState,
-  fetchLatestBaileysVersion,
-  makeWASocket,
-  DisconnectReason
-} from '@whiskeysockets/baileys';
-import pino from 'pino';
-import { Boom } from '@hapi/boom';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { handleAutoReply } from './commands/auto-reply.js'; // Import the event handler
+const __dirname = dirname(fileURLToPath(import.meta.url))
+await loadSettings()
 
-const config = JSON.parse(fs.readFileSync('./config.json'));
-// --- Constants ---
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const prefix = '.';
-global.owner = config.ownerNumber;
-const usePairingCode = true;
+let commands = new Map()
+let botReady = false
+let sock = null
 
-// --- Auto Import Commands ---
-async function loadCommands() {
-  const commands = [];
-  const files = fs.readdirSync(path.join(__dirname, 'commands'));
-  for (const file of files) {
-    if (!file.endsWith('.js')) continue;
-    try {
-      const module = await import(`./commands/${file}`);
-      const commandName = module.info.name;
-      if (module.info && typeof module[`${commandName}Command`] === 'function') {
-        commands.push({
-          info: module.info,
-          execute: module[`${commandName}Command`],
-        });
-      }
-    } catch (error) {
-      console.error(`Error loading command from ${file}:`, error);
-    }
-  }
-  return commands;
-}
-
-// --- Find Command Helper ---
-function findCommand(commands, cmd) {
-  return commands.find(
-    ({ info }) => info.name === cmd || (info.aliases && info.aliases.includes(cmd))
-  );
-}
-
-// --- Main Bot ---
-const startBot = async () => {
-  const commandsArr = await loadCommands();
-
-  const { state, saveCreds } = await useMultiFileAuthState('auth');
-  const { version } = await fetchLatestBaileysVersion();
-
-  const sock = makeWASocket({
-    version,
-    logger: pino({ level: 'silent' }),
-    auth: state,
-    printQRInTerminal: !usePairingCode,
-  });
-
-  // Pairing code
-  if (usePairingCode && !sock.authState.creds.registered) {
-    if (!config.ownerNumber) {
-      console.log("Please add owner number in config.json");
-    } else {
-      console.log("Requesting pairing code for:", config.ownerNumber);
-      setTimeout(async () => {
+const loadCommands = async () => {
+    console.log('🔄 Loading commands...')
+    const files = readdirSync(join(__dirname, 'commands')).filter(f => f.endsWith('.js'))
+    for (const file of files) {
         try {
-          const code = await sock.requestPairingCode(config.ownerNumber);
-          console.log(`\nYour pairing code is: ${code}`);
-        } catch (e) {
-          console.error('Failed to request pairing code:', e);
+            const { default: cmd } = await import(`./commands/${file}?t=${Date.now()}`)
+            if (cmd?.info?.name && cmd?.execute) {
+                commands.set(cmd.info.name.toLowerCase(), cmd)
+                if (cmd.info.alias) cmd.info.alias.forEach(a => commands.set(a.toLowerCase(), cmd))
+            }
+        } catch (e) { console.error(`❌ Error in ${file}:`, e.message) }
+    }
+    console.log(`✅ Loaded ${commands.size} triggers.`)
+}
+
+const startBot = async () => {
+    const { state, saveCreds } = await useMultiFileAuthState('auth')
+    const { version } = await fetchLatestBaileysVersion()
+
+    sock = makeWASocket({
+        version,
+        logger: pino({ level: 'silent' }),
+        auth: state,
+        browser: [getSetting('bot.name'), 'Chrome', '1.0.0'],
+        markOnlineOnConnect: true
+    })
+
+    if (getSetting('bot.auth') === 'pr' && !sock.authState.creds.registered) {
+        const owner = getSetting('owner.number').replace(/\D/g, '')
+        setTimeout(async () => {
+            try {
+                const code = await sock.requestPairingCode(owner)
+                console.log(`🔑 Pairing Code: ${code}`)
+            } catch (e) { console.error('Pairing Error:', e.message) }
+        }, 3000)
+    }
+
+    sock.ev.on('creds.update', saveCreds)
+
+    sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
+        if (qr && getSetting('bot.auth') === 'qr') qrcode.generate(qr, { small: true })
+        
+        if (connection === 'open') {
+            const botNumber = sock.user.id.split(':')[0]
+            console.log(`✅ Connected as ${sock.user.name || botNumber}`)
+            await delay(5000) 
+            botReady = true
+            console.log('🎉 Bot ready for commands!')
         }
-      }, 3000);
-    }
-  }
 
-  sock.ev.on('creds.update', saveCreds);
+        if (connection === 'close') {
+            botReady = false
+            const shouldReconnect = new Boom(lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut
+            if (shouldReconnect) {
+                console.log('🔄 Reconnecting...')
+                startBot()
+            }
+        }
+    })
 
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect } = update;
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+        if (type !== 'notify') return;
+        const m = messages[0];
+        if (!botReady || !m.message) return;
 
-    if (connection === 'open') {
-      console.log('✅ Bot connected successfully!');
-      await sock.sendMessage(`${global.owner}@s.whatsapp.net`, {
-        text: '🟢 ALex-Techy BoTZ is now online!'
-      });
-    }
+        if (m.key.fromMe) return;
 
-    if (connection === 'close') {
-      const shouldReconnect =
-        lastDisconnect?.error instanceof Boom &&
-        lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut;
-      if (shouldReconnect) startBot();
-    }
-  });
+        const text = (m.message.conversation || 
+                    m.message.extendedTextMessage?.text || 
+                    m.message.imageMessage?.caption || 
+                    m.message.videoMessage?.caption || '').trim();
 
-  // =======================================================
-  //                 MESSAGE HANDLER
-  // =======================================================
-  sock.ev.on('messages.upsert', async ({ messages }) => {
-    const m = messages[0];
-    if (!m?.message) return;
+        const prefix = getSetting('bot.prefix');
+        if (!text.startsWith(prefix)) return;
 
-    const msg =
-      m.message.conversation ||
-      m.message.extendedTextMessage?.text ||
-      m.message.imageMessage?.caption ||
-      m.message.videoMessage?.caption ||
-      '';
+        const args = text.slice(prefix.length).trim().split(/ +/);
+        const cmdName = args.shift().toLowerCase();
+        const command = commands.get(cmdName);
 
-    const sender = m.key.participant || m.key.remoteJid || "";
-    const senderNum = sender.replace(/[^0-9]/g, "");
+        if (command) {
+            const sender = (m.key.participant || m.key.remoteJid).split(':')[0].split('@')[0].replace(/\D/g, '');
+            const owner = getSetting('owner.number').replace(/\D/g, '');
+            const isOwner = sender === owner;
 
-    // --- Handle Auto-reply (for all users) ---
-    await handleAutoReply(m, sock);
+            if (getSetting('bot.privateMode') && !isOwner) return;
 
-    // --- PRIVATE MODE: Only owner can proceed ---
-    const owner = String(global.owner).replace(/[^0-9]/g, "");
-    if (senderNum !== owner) {
-      return; // Stop processing if sender is not the owner
-    }
+            (async () => {
+                try {
+                    await sock.sendMessage(m.key.remoteJid, { react: { text: '⏳', key: m.key } });
+                    await command.execute(m, sock, args.join(' '));
+                    await sock.sendMessage(m.key.remoteJid, { react: { text: '✅', key: m.key } });
+                } catch (e) {
+                    console.error('Command Exec Error:', e.message)
+                    await sock.sendMessage(m.key.remoteJid, { react: { text: '❌', key: m.key } });
+                }
+            })();
+        }
+    });
+}
 
-    // --- Command Handling (for owner only) ---
-    if (!msg.startsWith(prefix)) return;
-
-    const command = msg.slice(prefix.length).split(' ')[0].toLowerCase();
-    const body = msg.slice(prefix.length + command.length).trim();
-
-    const cmdObj = findCommand(commandsArr, command);
-    if (cmdObj) {
-      try {
-        await cmdObj.execute(m, sock, { body });
-      } catch (e) {
-        console.error('❌ Command error:', e);
-        await sock.sendMessage(
-          m.key.remoteJid,
-          { text: '❌ Error executing command.' },
-          { quoted: m }
-        );
-      }
-    }
-  });
-};
-
-startBot();
+loadCommands().then(() => startBot())
